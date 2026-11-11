@@ -229,6 +229,25 @@ export class Sim {
     this.emit('phantom');
   }
 
+  /**
+   * Surge is locked while Phantom Drive is active — except when Phantom is paused specifically
+   * by a Chasm hold that hasn't been cleared yet (R7.3). The boost stays suspended (factor 1)
+   * and the timer frozen through the whole Surge flight, so Phantom never touches the flight.
+   */
+  private surgeLockedByPhantom() {
+    if (this.phantomT <= 0) return false;
+    const h = this.phantomHold;
+    const chasmPause = !!h && h.kind === 'chasm' && this.s <= h.z1;
+    return !chasmPause;
+  }
+
+  /** A run-ending transition: Phantom Drive ends with the run (nothing resumable, no refund). */
+  private endPhantom() {
+    this.phantomT = 0;
+    this.phantomHold = null;
+    this.phantomOn = false;
+  }
+
   /** A Chasm (not yet cleared to its far edge) within warning range. */
   private chasmInRange(): Hazard | null {
     const h = this.findHazard();
@@ -245,7 +264,8 @@ export class Sim {
     if (this.phantomCd > 0) this.phantomCd = Math.max(0, this.phantomCd - dt);
     this.phantomOn = false;
     if (this.phantomT <= 0) return 1;
-    if (this.phantomHold && this.s > this.phantomHold.z1) { this.phantomHold = null; this.emit('phantomResume'); }
+    // resume only once the Chasm is behind us AND the bike is back on the ground (never mid-flight, Surge or ramp)
+    if (this.phantomHold && this.s > this.phantomHold.z1 && !this.airborne) { this.phantomHold = null; this.emit('phantomResume'); }
     if (!this.phantomHold) { const c = this.chasmInRange(); if (c) { this.phantomHold = c; this.emit('phantomPause'); } }
     if (this.phantomHold) return 1;
     this.phantomOn = true;
@@ -320,7 +340,7 @@ export class Sim {
     const ability = CHARACTER_KIT[this.character].signature;
     if (ability === 'smash' || ability === 'mutagenRepellent') { this.counter(ability); return; }
     if (ability !== 'surgeJump') return;
-    if (this.phantomT > 0) { const e = this.emit('denied'); e.ability = 'surgeJump'; e.reason = 'phantom'; return; } // no Surge while Phantom Drive is active (incl. paused)
+    if (this.surgeLockedByPhantom()) { const e = this.emit('denied'); e.ability = 'surgeJump'; e.reason = 'phantom'; return; }
     // Surge Jump: grounded, full meter only; spends all of it.
     if (this.airborne || this.momentum < TUNING.momentum.max) { const e = this.emit('denied'); e.ability = 'surgeJump'; e.reason = this.airborne ? 'airborne' : 'momentum'; return; }
     this.momentum = 0;
@@ -558,6 +578,7 @@ export class Sim {
       this.hp = 0;
       this.alive = false;
       this.deathCause = 'pillars';
+      this.endPhantom();
       this.combo = 0; this.chain = 1;
       this.emit('dead');
       return;
@@ -585,6 +606,7 @@ export class Sim {
     const e = this.emit('crash'); e.hazard = 'mutantSpill'; e.jump = this.jumpKind; // y = height when seized
     this.grabbed = true;
     this.grabT = 0;
+    this.endPhantom();
     this.airborne = false;
     this.jumpKind = 'none';
     this.jumpV = 0;
@@ -610,6 +632,7 @@ export class Sim {
 
   private startFall() {
     this.falling = true;
+    this.endPhantom();
     this.fallT = 0;
     this.airborne = false;
     this.jumpKind = 'none';
@@ -698,7 +721,7 @@ export class Sim {
     this.baseSpeed *= 0.72;
     this.speed *= 0.72;
     this.emit('hit', kind);
-    if (this.hp <= 0) { this.alive = false; this.deathCause = kind === 'barricade' ? 'barricade' : 'crate'; this.emit('dead'); }
+    if (this.hp <= 0) { this.alive = false; this.deathCause = kind === 'barricade' ? 'barricade' : 'crate'; this.endPhantom(); this.emit('dead'); }
   }
 
   // --- look-ahead for the HUD ---
@@ -720,6 +743,6 @@ export class Sim {
     if (!h || h.cleared || h.repelled || this.s >= h.z0 || h.z0 - this.s > this.speed * seconds) return null;
     const ability = CHARACTER_KIT[this.character].signature;
     const canBypass = bypasses(h.kind, this.character, ability);
-    return { hazard: h, dist: h.z0 - this.s, laneOffset: h.safeLane - this.lane, canBypass, bypassReady: canBypass && this.momentum >= this.abilityCost(ability) && this.inAbilityWindow(ability, h) && !(ability === 'surgeJump' && this.phantomT > 0), ability };
+    return { hazard: h, dist: h.z0 - this.s, laneOffset: h.safeLane - this.lane, canBypass, bypassReady: canBypass && this.momentum >= this.abilityCost(ability) && this.inAbilityWindow(ability, h) && !(ability === 'surgeJump' && this.surgeLockedByPhantom()), ability };
   }
 }

@@ -48,7 +48,13 @@ export class HudScene extends Phaser.Scene {
     text('big', '#ffb020', 0.5, 0.5); text('sub', '#ffffff', 0.5, 0.5); text('hint', '#cfd8ff', 0.5, 0.5); text('stats', '#ffffff', 0.5, 0.5);
     this.t.toast.setAlpha(0);
 
-    this.game_.events.on('mode', (m: Mode) => { this.mode = m; this.layout(); });
+    this.game_.events.on('mode', (m: Mode) => {
+      this.mode = m;
+      // a run starting or ending wipes any temporary notice (e.g. GRABBED!) so it can't sit on
+      // the game-over headline or carry into the next run; toasts emitted after this still show
+      if (m === 'over' || m === 'run') { this.t.toast.setAlpha(0); this.toastUntil = 0; }
+      this.layout();
+    });
     this.game_.events.on('route', (role: Role) => {
       this.t.toast.setText(role === 'risky' ? 'SHORTCUT!  MORE MOMENTUM' : 'SAFE ROUTE').setColor(role === 'risky' ? '#ffb020' : '#7dffb0').setAlpha(1);
       this.toastUntil = this.time.now + 1500;
