@@ -8,7 +8,8 @@
     npm run dev        # http://localhost:5180
 
 `npm run build` type-checks and produces `dist/`. `npm run assets` regenerates the
-game-ready sprites in `public/assets` from the untouched source art in `Assets/`.
+game-ready sprites in `public/assets` from the untouched source art in `Assets/`;
+`npm run assets:ui` cuts the menu art into `public/assets/ui` from the reference sheets.
 
 ## Layout
 
@@ -18,6 +19,9 @@ game-ready sprites in `public/assets` from the untouched source art in `Assets/`
     src/input    keyboard + swipe -> intents
     src/render   camera/projection, road + scenery painters, generated textures
     src/scenes   Boot, Game (loop + presentation), Hud (HUD, title, game over)
+    src/ui       front-end menus (DOM overlay): home, modes, class select, garage, profile,
+                 leaderboard, shop, settings, wallet, pause, run over. bridge.ts is the only
+                 seam to the game; ?nomenu=1 skips the menus.
     tools        asset preparation and headless test helpers
 
 Debug URL flags: `?seed=7&autostart=1&god=1&lane=3&warp=10&find=split`.
