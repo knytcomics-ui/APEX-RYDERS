@@ -1,0 +1,26 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+
+# Local tools and debug artefacts
+tools/_debug_*
+
+# Environment and secrets
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# Test output
+coverage/
+playwright-report/
+test-results/
+*.log
+
+# Accidental root-level test artefacts
+/${m},
+/grabbed=${g.grabbed}
+/mode=${end.mode},
