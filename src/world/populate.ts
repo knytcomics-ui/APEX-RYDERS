@@ -12,6 +12,8 @@ export interface Entity {
   s: number;
   h: number; // height above the road surface
   taken: boolean;
+  /** Brute's Near-Miss already paid out for this object (it can reward once, ever). */
+  nearMissed?: boolean;
 }
 
 export const isPickup = (k: EntityKind): k is PickupKind => k === 'coin' || k === 'momentumSmall' || k === 'momentumLarge';

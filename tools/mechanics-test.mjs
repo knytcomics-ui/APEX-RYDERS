@@ -163,7 +163,7 @@ const suite = () => {
     check('Brute cannot Smash the Chasm', d && d.reason === 'noTarget' && s.momentum === 100 && r === 'dead'); }
   { const { s, h } = toChasm(60, ramp, 0, 7, 'brute'); check('Brute crosses the Chasm by the ramp', outcome(s, h) === 'crossed'); }
   { const s = new Sim({ seed: 7, god: true, character: 'brute' }); run(s, 1); s.momentum = 100; s.intent('jump'); run(s, 0.25); s.intent('jump');
-    check('Brute has no Air Jump', s.jumpKind === 'normal' && s.momentum === 100); }
+    check('Brute can Double Jump (R7.2)', s.jumpKind === 'air' && s.momentum === 100 - TUNING.jump.airCost); }
 
   // --- Mutant Spill & Mutagen Repellent (R4) ---
   const RP = TUNING.repellent;
@@ -222,7 +222,7 @@ const suite = () => {
     check('Repellent does not counter the Chasm or Pillars', d1 && d1.reason === 'noTarget' && r1 === 'dead' && d2 && d2.reason === 'noTarget' && r2 === 'dead' && c1.s.momentum === 100 && p1.s.momentum === 100); }
   { const s = new Sim({ seed: 7, god: true, character: 'lynn' }); run(s, 1); s.momentum = 100; s.intent('jump'); run(s, 0.25); s.intent('jump');
     const { s: c, h } = toChasm(60, ramp, 0, 7, 'lynn');
-    check('Lynn: no Air Jump; crosses the Chasm by the ramp', s.jumpKind === 'normal' && s.momentum === 100 && outcome(c, h) === 'crossed'); }
+    check('Lynn: can Double Jump (R7.2); crosses the Chasm by the ramp', s.jumpKind === 'air' && s.momentum === 100 - TUNING.jump.airCost && outcome(c, h) === 'crossed'); }
 
   // --- R5: Scrap (Brute) & Full Heal (Lynn), on the secondary input ---
   {
@@ -243,8 +243,6 @@ const suite = () => {
       check('Scrap gives no hazard protection (blocked Pillars lane)', active && r === 'dead' && !h.cleared, `Scrap active, then ${r}`); }
     { const { s, h } = toPillars(30, other, 60, 7, 'brute'); s.intent('ability'); s.intent('down'); const m = s.momentum, def = s.def; const r = outcome(s, h);
       check('Smash still works alongside Scrap', h.cleared && m === 60 - TUNING.smash.cost && r === 'crossed' && def === TUNING.survival.def - 1, `Momentum 60 -> ${m}, DEF ${def}, ${r}`); }
-    { const s = rider('mach', 100); const before = JSON.stringify([s.hp, s.def, s.momentum, s.scrapT]); s.intent('ability');
-      check('Mach has no secondary ability: E / tap changes nothing', s.events.length === 0 && JSON.stringify([s.hp, s.def, s.momentum, s.scrapT]) === before); }
     { const s = rider('lynn', 60); s.def = 0; s.hp = 1; s.intent('ability');
       check(`Full Heal: HP back to max for ${FH.cost} Momentum, DEF untouched`, s.events.some((e) => e.type === 'heal') && s.hp === TUNING.survival.hp && s.momentum === 60 - FH.cost && s.def === 0, `HP 1 -> ${s.hp}, Momentum 60 -> ${s.momentum}, DEF 0 -> ${s.def}`); }
     { const s = rider('lynn', 100); s.def = 1; s.intent('ability'); const d = denied(s);
@@ -263,6 +261,137 @@ const suite = () => {
       run(l, 2); const deadL = !l.alive; l.events.length = 0; l.intent('ability');
       check('No ability after game over (ordinary damage unchanged: DEF then HP)', dead && def === 0 && s.scrapT === 0 && !s.events.some((e) => e.type === 'scrap' || e.type === 'denied')
         && deadL && l.hp === 0 && l.momentum === 100 && l.events.length === 0); }
+  }
+
+  // --- R7.2: universal Double Jump, shuffle bag, Phantom Drive, Blink, Near-Miss, regeneration, death causes ---
+  {
+    const DJ = TUNING.jump.airCost, PH = TUNING.phantom, BL = TUNING.blink, RG = TUNING.regen;
+    const fresh2 = (character, momentum = 0) => { const s = new Sim({ seed: 7, god: true, character }); run(s, 1); s.god = false; s.momentum = momentum; s.events.length = 0; return s; };
+    // drop an entity into the road at dz metres ahead of the rider
+    const put = (s, kind, lane, dz) => { const z = s.s + dz; for (const sec of s.route.sections) if (sec.s0 <= z && sec.s1 > z) { const e = { kind, lane, s: z, h: 0, taken: false }; sec.entities.push(e); return e; } return null; };
+    const ev = (s, type) => s.events.filter((e) => e.type === type);
+    const clearAround = (s, from, to) => { for (const sec of s.route.sections) sec.entities = sec.entities.filter((e) => !(e.s > s.s + from && e.s < s.s + to && (e.kind === 'crate' || e.kind === 'barricade'))); };
+
+    // ---------- Double Jump ----------
+    { const res = ['mach', 'brute', 'lynn'].map((ch) => {
+        const s = fresh2(ch, 60); s.intent('jump'); run(s, 0.25); s.intent('jump'); const ok = s.jumpKind === 'air' && s.momentum === 60 - DJ; s.intent('jump'); const once = s.momentum === 60 - DJ && ev(s, 'jump').length === 2;
+        const p = fresh2(ch, DJ - 1); p.intent('jump'); run(p, 0.25); p.intent('jump'); const refused = p.jumpKind === 'normal' && p.momentum === DJ - 1 && ev(p, 'denied').length === 1;
+        return { ch, ok, once, refused }; });
+      check(`Double Jump: all riders, ${DJ} Momentum, once per flight, refused below cost`, res.every((r) => r.ok && r.once && r.refused), res.map((r) => `${r.ch} ${r.ok && r.once && r.refused ? 'ok' : JSON.stringify(r)}`).join(', ')); }
+    { const { s, h } = toChasm(60, ramp, 100, 7, 'brute'); let t = 0; while (s.jumpKind !== 'ramp' && t < 6) { s.step(STEP); t += STEP; } run(s, 0.2); const m = s.momentum; s.intent('jump');
+      const m2 = fresh2('mach', 100); m2.intent('down'); run(m2, 0.3); m2.momentum = 50; m2.intent('jump');
+      check('Double Jump not allowed during a ramp flight or a Surge', s.jumpKind === 'ramp' && s.momentum === m && m2.jumpKind === 'surge' && m2.momentum === 50 && outcome(s, h) === 'crossed'); }
+    { const res = ['brute', 'lynn'].map((ch) => { const { s, h } = toChasm(3, other, DJ, 7, ch); s.intent('jump'); let t = 0; while (s.jumpY > 0.3 || s.jumpV > 0) { s.step(STEP); if ((t += STEP) > 3) break; } s.intent('jump'); const used = s.jumpKind === 'air'; return used && outcome(s, h) === 'dead'; });
+      check('Jump + Double Jump cannot clear the Chasm (Brute, Lynn)', res.every(Boolean)); }
+
+    // ---------- shuffle bag ----------
+    { const seeds = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]; let groups = 0, bad = 0, maxSep = 0, maxSepM = 0; const seqs = [];
+      const seq = (seed) => { const s = new Sim({ seed, god: true }); const m = new Map(); let g = 0; while (s.s < 12000 && g++ < 5e6) { s.step(STEP); for (const x of s.route.sections) for (const h of x.hazards) m.set(h.z0, h); } return [...m.values()].sort((a, b) => a.z0 - b.z0); };
+      for (const seed of seeds) { const hz = seq(seed); seqs.push(hz.map((h) => h.kind[0]).join(''));
+        for (let i = 0; i + 3 <= hz.length; i += 3) { groups++; if (new Set(hz.slice(i, i + 3).map((h) => h.kind)).size !== 3) bad++; }
+        for (const k of ['chasm', 'pillars', 'mutantSpill']) { const idx = hz.map((h, i) => (h.kind === k ? i : -1)).filter((i) => i >= 0); for (let i = 1; i < idx.length; i++) { maxSep = Math.max(maxSep, idx[i] - idx[i - 1]); maxSepM = Math.max(maxSepM, hz[idx[i]].z0 - hz[idx[i - 1]].z1); } } }
+      const again = seq(7).map((h) => h.kind[0]).join('');
+      check('Shuffle bag: every group of three holds one of each; same seed, same sequence', bad === 0 && groups >= 60 && again === seqs[6],
+        `${groups} groups over ${seeds.length} x 12 km, ${bad} bad; worst same-kind separation ${maxSep} hazards / ${maxSepM.toFixed(0)} m; seed 7 starts ${seqs[6].slice(0, 12)}`); }
+
+    // ---------- Phantom Drive ----------
+    const toTop = () => { const s = new Sim({ seed: 11, god: true }); let g = 0; while (s.s < 6200 && g++ < 2e6) s.step(STEP); while ((s.findHazard() && s.findHazard().z0 - s.s < 900) && g++ < 3e6) s.step(STEP); s.god = false; s.momentum = 100; s.events.length = 0; return s; };
+    { const s = toTop(); const base = s.baseSpeed; s.intent('ability'); const sp0 = s.speed, m = s.momentum;
+      let boosted = 0, maxV = 0, t = 0; while (s.phantomT > 0 && t < 10) { s.step(STEP); t += STEP; if (s.phantomOn) { boosted += STEP; maxV = Math.max(maxV, s.speed); } }
+      const cd0 = s.phantomCd; let cdT = 0; while (s.phantomCd > 0 && cdT < 20) { s.step(STEP); cdT += STEP; }
+      check(`Phantom Drive: ${PH.cost} Momentum, immediate +25%, ${PH.duration} s boosted, ${PH.cooldown} s cooldown after`, m === 100 - PH.cost && Math.abs(sp0 - base * 1.25) < 1e-9 && Math.abs(boosted - PH.duration) < 0.01 && Math.abs(maxV - 65) < 0.01 && cd0 === PH.cooldown && Math.abs(cdT - PH.cooldown) < 0.01 && s.speed === s.baseSpeed,
+        `${base.toFixed(1)} -> ${sp0.toFixed(1)} m/s at once, max ${maxV.toFixed(2)}, boosted ${boosted.toFixed(2)} s, cooldown ${cdT.toFixed(2)} s`); }
+    { const s = toTop(); s.intent('ability'); s.chain = 1; const sc = s.score; s.collect('coin'); const g1 = s.score - sc; const chainSame = s.scoreChain === s.chain;
+      const t = toTop(); const sc2 = t.score; t.collect('coin'); const g0 = t.score - sc2;
+      check('Phantom score bonus: x1.25 per gain, rounded; chain untouched', g1 === Math.round(TUNING.score.coin * s.chain * PH.scoreFactor) && g1 === 13 && g0 === 10 && chainSame, `coin at chain x${s.chain}: ${g0} normally, ${g1} boosted (12.5 rounded)`); }
+    { const s = toTop(); s.intent('ability'); const t0 = s.phantomT; run(s, 0.5); s.events.length = 0; s.intent('ability'); const d1 = ev(s, 'denied')[0];
+      while (s.phantomT > 0) s.step(STEP); s.events.length = 0; s.intent('ability'); const d2 = ev(s, 'denied')[0];
+      const p = toTop(); p.momentum = PH.cost - 1; p.intent('ability'); const d3 = ev(p, 'denied')[0];
+      const dead = toTop(); dead.alive = false; dead.intent('ability');
+      check('Phantom: no stacking/extension, cooldown enforced, refused without Momentum or after game over', d1 && d1.reason === 'active' && d2 && d2.reason === 'cooldown' && d3 && d3.reason === 'momentum' && p.momentum === PH.cost - 1 && p.phantomT === 0 && dead.events.length === 0 && dead.phantomT === 0 && t0 === PH.duration); }
+    { const a = toTop(); a.intent('down'); run(a, 0.2); a.events.length = 0; a.intent('ability'); const d1 = ev(a, 'denied')[0];
+      const b = toTop(); b.intent('ability'); b.events.length = 0; b.intent('down'); const d2 = ev(b, 'denied')[0];
+      check('Phantom refused during Surge; Surge refused during Phantom (no cost)', d1 && d1.reason === 'surge' && a.momentum === 0 && a.phantomT === 0 && d2 && d2.reason === 'phantom' && b.jumpKind !== 'surge' && b.momentum === 100 - PH.cost); }
+    // ride to a Chasm in god mode, `ahead` metres before its warning range
+    const nearChasm = (ahead, laneOf = null) => { const s = new Sim({ seed: 7, god: true }); let g = 0;
+      while ((!s.hazard || s.hazard.kind !== 'chasm' || s.hazard.z0 - s.s > 600) && g++ < 2e6) s.step(STEP);
+      const h = s.hazard; if (laneOf) { const l = laneOf(h); while (s.lane !== l) { s.intent(l < s.lane ? 'left' : 'right'); run(s, 0.3); } }
+      while (h.z0 - s.s > s.speed * 3.2 + ahead) s.step(STEP); s.momentum = 100; s.events.length = 0; return { s, h }; };
+    { const { s } = nearChasm(-20); s.intent('ability'); const d = ev(s, 'denied')[0];
+      check('Phantom refused with a Chasm already in warning range (no cost, no cooldown)', d && d.reason === 'chasm' && s.momentum === 100 && s.phantomT === 0 && s.phantomCd === 0); }
+    { const { s, h } = nearChasm(60); s.intent('ability'); let t = 0; while (!ev(s, 'phantomPause').length && t < 5) { s.step(STEP); t += STEP; }
+      const left = s.phantomT, paused = s.speed === s.baseSpeed; run(s, 1); const frozen = s.phantomT === left && s.speed === s.baseSpeed;
+      let g = 0; while (s.s <= h.z1 && g++ < 1e5) s.step(STEP); run(s, 2 * STEP); const resumed = ev(s, 'phantomResume').length === 1 && s.phantomOn && Math.abs(s.speed - s.baseSpeed * 1.25) < 1e-9;
+      check('Chasm in range pauses the boost and timer; resumes after the far edge', paused && frozen && resumed && s.phantomHold === null, `paused with ${left.toFixed(2)} s left, ${(h.z0 - (s.s - 0)).toFixed(0)}; resumed past far edge`); }
+    { const { s, h } = nearChasm(40, other); s.intent('ability'); let g = 0; while (h.z0 - s.s > 3 && g++ < 1e5) s.step(STEP);
+      s.god = false; s.momentum = DJ; const held = !!s.phantomHold && !s.phantomOn; s.intent('jump'); let t = 0; while (s.jumpY > 0.3 || s.jumpV > 0) { s.step(STEP); if ((t += STEP) > 3) break; } s.intent('jump'); const r = outcome(s, h);
+      check('Jump + Double Jump with Phantom active still fails the Chasm', held && s.jumpKind !== 'surge' && r === 'dead', `Phantom held=${held} at the edge, outcome ${r}`); }
+    { const s = toTop(); s.intent('ability'); s.blinkCd = 999; run(s, 0.3); const e = put(s, 'crate', s.laneNow, s.speed * 0.6); const def = s.def; run(s, 1);
+      check('No objects skipped at 65 m/s (crate still hits)', e && e.taken && s.def === def - 1 && s.speed > 0, `step ${(65 / 120).toFixed(2)} m vs ±1.1 m hit window`); }
+
+    // ---------- Blink ----------
+    const machOpen = () => { const s = fresh2('mach', 0); clearAround(s, -5, 200); return s; };
+    { const s = machOpen(); const lane = s.lane; const e = put(s, 'crate', lane, s.speed * 0.6); let t = 0, tti = null;
+      while (!ev(s, 'blink').length && t < 1.5) { s.step(STEP); t += STEP; const b = ev(s, 'blink')[0]; if (b) tti = (e.s - b.z - 1.1) / s.speed; } // time to impact at the moment it fired
+      check(`Blink: fires inside the ${BL.window} s window, prefers left, ${BL.cooldown} s cooldown, no hit, no invulnerability`, tti !== null && tti <= BL.window + 1e-6 && tti > BL.window - 0.02 && s.lane === lane - 1 && s.laneT === 1 && s.blinkCd > BL.cooldown - 0.02 && !e.taken && s.invuln === 0 && s.def === 2,
+        `fired ${tti?.toFixed(3)} s before impact, lane ${lane} -> ${s.lane}`); }
+    { const s = machOpen(); s.intent('right'); const from = s.laneFrom; put(s, 'crate', from, s.speed * 0.05 + 1); s.step(STEP);
+      check('Blink while changing lanes: goes opposite the change, cancels it', ev(s, 'blink').length === 1 && s.lane === from - 1 && s.laneT === 1, `changing ${from}->${from + 1}, blinked to ${s.lane}`); }
+    { const s = machOpen(); const lane = s.lane; put(s, 'crate', lane - 1, s.speed * 0.3); put(s, 'crate', lane, s.speed * 0.2); run(s, 0.4);
+      check('Blink falls back to the right when left has debris near arrival', ev(s, 'blink').length === 1 && s.lane === lane + 1); }
+    { const s = machOpen(); const lane = s.lane; put(s, 'crate', lane - 1, s.speed * 0.3); put(s, 'crate', lane + 1, s.speed * 0.3); const e = put(s, 'crate', lane, s.speed * 0.2); run(s, 0.6);
+      check('No safe lane: no Blink, no cooldown spent, the hit lands', ev(s, 'blink').length === 0 && s.blinkCd === 0 && e.taken && s.def === 1); }
+    { const s = new Sim({ seed: 3, god: true, character: 'mach' }); let g = 0; while (s.sec.def.kind !== 'branch' && g++ < 3e6) s.step(STEP);
+      const rb = s.sec.ribbons[s.sec.laneRibbon[s.lane]], edgeLane = rb.lanes[rb.lanes.length - 1]; while (s.lane !== edgeLane) { s.intent(edgeLane < s.lane ? 'left' : 'right'); run(s, 0.3); }
+      s.god = false; s.events.length = 0; clearAround(s, -3, 120); const divider = !s.sec.canCross(s.lane, s.lane + 1, s.s);
+      put(s, 'crate', s.lane - 1, s.speed * 0.3); put(s, 'crate', s.lane, s.speed * 0.2); const lane = s.lane; run(s, 0.6);
+      check('Blink never crosses a fork divider', divider && ev(s, 'blink').length === 0 && s.lane === lane, `ribbon ${rb.lanes.join('')} at its edge lane ${lane}`); }
+    { const { s, h } = toPillars(50, (x) => x.safeLane); s.god = false; clearAround(s, -3, 60); const e = put(s, 'crate', s.lane, s.speed * 0.2); run(s, 0.5);
+      check('Blink never fires around a lethal hazard (stays in the safe gap)', ev(s, 'blink').length === 0 && s.lane === h.safeLane && e && e.taken); }
+    { const s = machOpen(); s.invuln = 1; const e = put(s, 'crate', s.lane, s.speed * 0.2); run(s, 0.4); const noInv = ev(s, 'blink').length === 0;
+      const a = machOpen(); a.intent('jump'); run(a, 0.05); put(a, 'crate', a.lane, a.speed * 0.2); run(a, 0.3);
+      check('Blink: not during invulnerability, not while airborne', noInv && e.taken && ev(a, 'blink').length === 0); }
+    { const s = machOpen(); put(s, 'crate', s.lane, s.speed * 0.3); run(s, 0.4); const l1 = s.lane; put(s, 'crate', l1, s.speed * 0.3); run(s, 0.4); const second = ev(s, 'blink').length;
+      run(s, 1.2); put(s, 'crate', s.lane, s.speed * 0.3); run(s, 0.4);
+      check('Blink cooldown: a second threat inside 1.5 s is not dodged; after it, Blink works again', second === 1 && ev(s, 'blink').length === 2 && s.def === 1, `blinks ${ev(s, 'blink').length}, DEF ${s.def}`); }
+
+    // ---------- Brute Near-Miss ----------
+    const bruteOpen = (m = 0) => { const s = fresh2('brute', m); clearAround(s, -5, 200); for (const x of s.route.sections) x.entities = x.entities.filter((e) => e.s < s.s - 5 || e.s > s.s + 200 || e.kind === 'crate' || e.kind === 'barricade'); return s; };
+    { const s = bruteOpen(); const e = put(s, 'crate', s.lane + 1, 20); run(s, 1.2); const m1 = s.momentum; s.intent('right'); run(s, 0.3); s.intent('left'); run(s, 0.3); s.intent('right'); run(s, 0.3);
+      check('Near-Miss: +1 per adjacent object, once only (weaving adds nothing)', m1 === 1 && s.momentum === 1 && e.nearMissed && ev(s, 'nearMiss').length === 1); }
+    { const s = bruteOpen(); put(s, 'crate', s.lane, 20); run(s, 1.2); const hit = s.momentum === 0 && s.def === 1;
+      const f = bruteOpen(); put(f, 'crate', f.lane + 2, 20); run(f, 1.2);
+      check('Near-Miss: nothing on a hit, nothing two lanes away', hit && f.momentum === 0 && ev(s, 'nearMiss').length === 0); }
+    { const s = bruteOpen(25); put(s, 'barricade', s.lane, s.speed * 0.45); put(s, 'barricade', s.lane + 1, s.speed * 0.45); s.intent('jump'); run(s, 1.2);
+      check('Near-Miss: nothing for jumping over or clearing debris', s.def === 2 && s.momentum === 25 && ev(s, 'nearMiss').length === 0); }
+    { const s = bruteOpen(100); put(s, 'crate', s.lane - 1, 20); run(s, 1.2);
+      check('Near-Miss respects the 100 cap', s.momentum === 100 && ev(s, 'nearMiss').length === 1); }
+    { const res = ['chasm', 'pillars', 'mutantSpill'].map((k) => { const { s, h } = toHazard(k, 50, ramp, 40, 7, 'brute'); let g = 0; while (s.s < h.z1 + 15 && s.alive && g++ < 1e5) s.step(STEP); return s.alive && s.momentum === 40 && ev(s, 'nearMiss').length === 0; });
+      check('Near-Miss: no reward from Chasm, Pillars or Mutant Spill', res.every(Boolean)); }
+
+    // ---------- Lynn regeneration ----------
+    const lynnOpen = () => { const s = fresh2('lynn', 0); clearAround(s, -5, 400); return s; };
+    { const s = lynnOpen(); s.def = 0; put(s, 'crate', s.lane, 10); let g = 0; while (s.hp === 2 && g++ < 400) s.step(STEP); const tHit = s.time; let t2 = null;
+      while (g++ < 4000) { s.step(STEP); if (ev(s, 'regen').length) { t2 = s.time; break; } }
+      check(`Regen: first +1 HP ${RG.delay} + ${RG.interval} s after damage; DEF stays 0`, t2 !== null && Math.abs(t2 - tHit - (RG.delay + RG.interval)) < 0.02 && s.hp === 2 && s.def === 0, `+1 HP ${(t2 - tHit).toFixed(2)} s after the hit`); }
+    { const s = lynnOpen(); s.hp = 1; s.god = true; run(s, RG.delay + RG.interval); const withDef = s.hp === 2 && s.def === 2; run(s, 30); // quiet time counts from the run start
+      check('Regen works with DEF intact; never exceeds 2 HP', withDef && s.hp === 2 && ev(s, 'regen').length === 1); }
+    { const s = lynnOpen(); s.hp = 1; s.def = 1; run(s, 6); put(s, 'crate', s.lane, 10); let g = 0; while (s.def === 1 && g++ < 400) s.step(STEP); const tHit = s.time;
+      while (!ev(s, 'regen').length && g++ < 5000) s.step(STEP);
+      check('Any DEF loss restarts the regen delay', Math.abs(s.time - tHit - (RG.delay + RG.interval)) < 0.02 && s.def === 0, `regen ${(s.time - tHit).toFixed(2)} s after the DEF hit`); }
+    { // prime the regen timer one frame from paying out, at the moment the run-ending state begins
+      const prime = (s, state) => { let g = 0; while (!s[state] && s.alive && g++ < 2000) s.step(STEP); s.hp = 1; s.regenQuiet = 99; s.regenAcc = RG.interval - 0.01; return s[state]; };
+      const a = toHazard('chasm', 3, other, 0, 7, 'lynn'); const fell = prime(a.s, 'falling'); outcome(a.s, a.h); run(a.s, 1);
+      const b = toHazard('mutantSpill', 3, other, 0, 7, 'lynn'); const grabbed = prime(b.s, 'grabbed'); outcome(b.s, b.h); run(b.s, 1);
+      check('No regen while falling, grabbed or dead', fell && grabbed && ev(a.s, 'regen').length === 0 && ev(b.s, 'regen').length === 0 && !a.s.alive && !b.s.alive && a.s.hp === 0 && b.s.hp === 0); }
+
+    // ---------- death causes ----------
+    { const c = toChasm(60, other); outcome(c.s, c.h); const p = toPillars(30, other); outcome(p.s, p.h); const m = toSpill(30, other); outcome(m.s, m.h);
+      const d1 = bruteOpen(); d1.def = 0; d1.hp = 1; put(d1, 'crate', d1.lane, 15); run(d1, 1.2);
+      const d2 = bruteOpen(); d2.def = 0; d2.hp = 1; put(d2, 'barricade', d2.lane, 15); run(d2, 1.2);
+      const fresh3 = new Sim({ seed: 7 });
+      check('Death cause recorded for all four causes; a new run starts clean', c.s.deathCause === 'chasm' && p.s.deathCause === 'pillars' && m.s.deathCause === 'mutantSpill' && d1.deathCause === 'crate' && d2.deathCause === 'barricade' && fresh3.deathCause === null,
+        [c.s, p.s, m.s, d1, d2].map((x) => x.deathCause).join(', ')); }
   }
 
   // --- R4.1 pacing & Momentum economy (12 seeds x 8 km) ---

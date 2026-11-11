@@ -28,6 +28,30 @@ export const TUNING = {
     duration: 5, // seconds
     chainFactor: 2, // score multiplier = chain x this while Scrap is active
   },
+  // Mach — Phantom Drive (E): a timed speed burst for Momentum (R7.2 approved values)
+  phantom: {
+    cost: 50, // Momentum, deducted on activation, never refunded
+    duration: 4, // seconds of actual boosted riding (paused while a Chasm is in range)
+    speedFactor: 1.25, // immediate; 52 m/s top speed becomes 65 m/s
+    scoreFactor: 1.25, // applied to each score gain while boosted, then rounded
+    cooldown: 8, // seconds, starting once the active duration has fully elapsed
+  },
+  // Mach — Blink passive: automatic one-lane teleport away from an imminent debris hit
+  blink: {
+    window: 0.25, // seconds before impact in which Blink may fire
+    cooldown: 1.5, // seconds after a successful Blink
+    arrivalClear: 0.5, // seconds of riding ahead that must be debris-free in the destination lane
+  },
+  // Brute — Near-Miss passive
+  nearMiss: {
+    reward: 1, // Momentum per qualifying object, once per object
+    lateral: 1.5, // max sideways distance (lane widths) for a pass to count as close
+  },
+  // Lynn — HP regeneration passive
+  regen: {
+    delay: 5, // damage-free seconds before the interval starts
+    interval: 12, // seconds per HP restored
+  },
   // Lynn — Full Heal: restore HP to maximum (initial balance value)
   fullHeal: {
     cost: 50, // Momentum
@@ -43,7 +67,7 @@ export const TUNING = {
     firstLethal: [330, 440] as [number, number], // target for the first hazard's near edge
     lethalGap: [280, 620] as [number, number], // target from one hazard's far edge to the next one's near edge, drawn per gap
     early: 60, // a hazard may start up to this much before its target, so section lengths don't push it late
-    repeatWeight: 0.6, // the same hazard twice in a row is a little less likely, never forbidden
+    // hazard type order: a seeded shuffle bag, one of each kind per group of three (route.ts)
   },
   /** Momentum pickups: chance per gameplay beat (~39 m) per carriageway. */
   pickups: {

@@ -23,11 +23,13 @@ export class GameScene extends Phaser.Scene {
 
   create() {
     this.cam.resize(this.scale.width, this.scale.height);
+    this.registry.set('horizonY', this.cam.horizonY); // the HUD keeps hazard banners above it
     this.sim = new Sim({ seed: this.seed(), attract: true });
     this.world = new WorldRenderer(this, this.cam);
     new InputController(this, (i) => this.onIntent(i), (tap) => this.onConfirm(tap));
     this.scale.on('resize', (size: Phaser.Structs.Size) => {
       this.cam.resize(size.width, size.height);
+      this.registry.set('horizonY', this.cam.horizonY);
       this.world.resize();
     });
     this.snapCamera();
@@ -149,10 +151,12 @@ export class GameScene extends Phaser.Scene {
       case 'denied': {
         const msg = e.ability === 'smash'
           ? (e.reason === 'noTarget' ? 'NOTHING TO SMASH' : `SMASH NEEDS ${TUNING.smash.cost} MOMENTUM`)
+          : e.ability === 'phantomDrive' ? ({ active: 'PHANTOM ALREADY ACTIVE', cooldown: 'PHANTOM COOLING DOWN', surge: 'NO PHANTOM DURING SURGE', chasm: 'NO PHANTOM NEAR A CHASM' } as Record<string, string>)[e.reason ?? ''] ?? `PHANTOM NEEDS ${TUNING.phantom.cost} MOMENTUM`
           : e.ability === 'scrap' ? (e.reason === 'active' ? 'SCRAP ALREADY ACTIVE' : 'SCRAP NEEDS 1 DEF')
           : e.ability === 'fullHeal' ? (e.reason === 'hpFull' ? 'HP ALREADY FULL' : `FULL HEAL NEEDS ${TUNING.fullHeal.cost} MOMENTUM`)
           : e.ability === 'mutagenRepellent' ? (e.reason === 'noTarget' ? 'NOTHING TO REPEL' : `REPELLENT NEEDS ${TUNING.repellent.cost} MOMENTUM`)
-          : e.ability === 'surgeJump' ? (e.reason === 'airborne' ? 'SURGE FROM THE GROUND' : 'SURGE NEEDS FULL MOMENTUM') : 'NOT ENOUGH MOMENTUM';
+          : e.ability === 'surgeJump' ? (e.reason === 'phantom' ? 'NO SURGE DURING PHANTOM' : e.reason === 'airborne' ? 'SURGE FROM THE GROUND' : 'SURGE NEEDS FULL MOMENTUM')
+          : e.ability === 'airJump' ? `DOUBLE JUMP NEEDS ${TUNING.jump.airCost} MOMENTUM` : 'NOT ENOUGH MOMENTUM';
         this.events.emit('toast', msg, '#ff8a7a');
         break;
       }
@@ -161,6 +165,19 @@ export class GameScene extends Phaser.Scene {
         main.flash(120, 90, 160, 255);
         this.world.onSmash(this.sim, e.z, e.lanes ?? []);
         this.events.emit('toast', 'SMASH!', '#7cc0ff');
+        break;
+      case 'phantom':
+        main.flash(110, 200, 120, 255);
+        this.events.emit('toast', 'PHANTOM DRIVE!', '#d6a8ff');
+        break;
+      case 'phantomPause':
+        this.events.emit('toast', 'PHANTOM PAUSED — CHASM', '#d6a8ff');
+        break;
+      case 'blink':
+        this.world.onBlink(this.sim, e.x0 ?? e.x, e.x, e.y, e.z);
+        break;
+      case 'regen':
+        this.events.emit('toast', '+1 HP', '#7dffb0');
         break;
       case 'scrap':
         main.shake(160, 0.01);

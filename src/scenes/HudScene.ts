@@ -93,7 +93,7 @@ export class HudScene extends Phaser.Scene {
     // centred, but never underneath the HP/DEF panel on narrow (portrait) screens
     const bcx = Math.max(W / 2, pad + 196 * u + bw / 2);
     this.boltIcon.setPosition(bcx - bw / 2 - 4 * u, H - pad - 19 * u).setDisplaySize(44 * u, 44 * u).setVisible(playing);
-    size('prompt', 20).setPosition(W / 2, H * 0.19);
+    size('prompt', 20).setPosition(W / 2, this.bannerY());
     size('toast', 26).setPosition(W / 2, H * 0.29);
 
     for (const k of ['distLabel', 'dist', 'coinLabel', 'coins', 'chainLabel', 'chain', 'scoreLabel', 'score', 'hp', 'def', 'prompt']) this.t[k].setVisible(playing);
@@ -101,11 +101,27 @@ export class HudScene extends Phaser.Scene {
     const title = this.mode === 'title', over = this.mode === 'over';
     const lw = Math.min(W * 0.82, 600 * u);
     this.titleLogo.setVisible(title).setPosition(W / 2, H * 0.3).setDisplaySize(lw, (lw * this.titleLogo.height) / this.titleLogo.width);
-    size('big', 60).setPosition(W / 2, H * 0.36).setText('WRECKED!').setVisible(over);
+    // cause-specific game-over headline, shrunk to fit narrow screens
+    const cause = this.game_.sim?.deathCause;
+    const headline = cause === 'chasm' ? 'FELL INTO THE CHASM!' : cause === 'pillars' ? 'HIT THE PILLARS!' : cause === 'mutantSpill' ? 'GRABBED BY THE MUTANT SPILL!'
+      : cause === 'crate' ? 'WRECKED BY A CRATE!' : cause === 'barricade' ? 'WRECKED BY A BARRICADE!' : 'WRECKED!';
+    size('big', 60).setPosition(W / 2, H * 0.36).setText(headline).setVisible(over);
+    if (this.t.big.width > W * 0.92) this.t.big.setFontSize(Math.floor(60 * u * (W * 0.92) / this.t.big.width));
     size('stats', 22).setPosition(W / 2, H * 0.5).setVisible(over).setAlign('center');
     size('sub', 24).setPosition(W / 2, title ? H * 0.8 : H * 0.66).setText(title ? 'PRESS SPACE  /  TAP TO RIDE' : 'PRESS SPACE  /  TAP TO RIDE AGAIN').setVisible(title || over);
     size('hint', 14).setPosition(W / 2, H * 0.8 + 40 * u).setAlign('center')
-      .setText('A / D  lanes     W / SPACE  jump  (again in the air: Air Jump)     S  ability (Mach: Surge Jump)     E  2nd ability\nMobile: swipe left / right, up to jump, down for S ability, tap for E ability').setVisible(title);
+      .setText('A / D  lanes     W / SPACE  jump  (again in the air: Double Jump)     S  ability (Mach: Surge Jump)     E  2nd ability\nMobile: swipe left / right, up to jump, down for S ability, tap for E ability').setVisible(title);
+  }
+
+  /**
+   * Where hazard and route banners sit: landscape — in the sky just above the horizon, so the
+   * road where distant hazards appear stays clear; portrait — at the bottom, above the HP and
+   * Momentum panels, over road the rider has already passed.
+   */
+  private bannerY() {
+    const { width: W, height: H } = this.scale, u = this.u;
+    if (W >= H) return Math.max(this.pad + 22 * u, ((this.registry.get('horizonY') as number | undefined) ?? H * 0.12) - 32 * u);
+    return H - this.pad - 64 * u - 34 * u;
   }
 
   private slab(x: number, y: number, w: number, h: number, color = NAVY, alpha = 0.9, rim = 0) {
@@ -154,12 +170,16 @@ export class HudScene extends Phaser.Scene {
       if (chain > this.shownChain) this.tweens.add({ targets: this.t.chain, scale: { from: 1.35, to: 1 }, duration: 220, ease: 'Back.easeOut' });
       this.shownChain = chain;
     }
-    // temporary Scrap indicator: countdown under the score
-    if (sim.scrapT > 0 && this.mode === 'run') {
+    // temporary ability status line under the score: Scrap (Brute), Phantom Drive (Mach)
+    let status: [string, number, number] | null = null; // text, colour, bar fraction
+    if (sim.scrapT > 0) status = [`SCRAP x2  ${sim.scrapT.toFixed(1)}s`, 0x7cc0ff, sim.scrapT / TUNING.scrap.duration];
+    else if (sim.phantomT > 0) status = sim.phantomHold ? ['PHANTOM PAUSED', 0xd6a8ff, sim.phantomT / TUNING.phantom.duration] : [`PHANTOM  ${sim.phantomT.toFixed(1)}s`, 0xd6a8ff, sim.phantomT / TUNING.phantom.duration];
+    else if (sim.phantomCd > 0) status = [`PHANTOM READY IN ${sim.phantomCd.toFixed(1)}s`, 0x8a8fb8, 1 - sim.phantomCd / TUNING.phantom.cooldown];
+    if (status && this.mode === 'run') {
       const sy = pad + 140 * u;
-      this.slab(rx - 146 * u, sy - 13 * u, 146 * u, 26 * u, 0x123a78, 0.92, 0x7cc0ff);
-      this.slab(rx - 140 * u, sy + 8 * u, 134 * u * (sim.scrapT / TUNING.scrap.duration), 3 * u, 0x7cc0ff, 1);
-      this.t.status.setText(`SCRAP x2  ${sim.scrapT.toFixed(1)}s`).setVisible(true);
+      this.slab(rx - 146 * u, sy - 13 * u, 146 * u, 26 * u, 0x1a1f45, 0.92, status[1]);
+      this.slab(rx - 140 * u, sy + 8 * u, 134 * u * status[2], 3 * u, status[1], 1);
+      this.t.status.setText(status[0]).setColor('#' + status[1].toString(16).padStart(6, '0')).setVisible(true);
     } else this.t.status.setVisible(false);
     if (sim.score !== shown.score) { shown.score = sim.score; this.t.score.setText(sim.score.toLocaleString()); }
 
@@ -200,13 +220,15 @@ export class HudScene extends Phaser.Scene {
       const counter = warn.ability === 'surgeJump' ? 'SURGE' : warn.ability === 'smash' ? 'SMASH' : 'REPEL';
       const where = o < 0 ? `${'◀'.repeat(Math.min(3, -o))} ${passage}` : o > 0 ? `${passage} ${'▶'.repeat(Math.min(3, o))}` : `▲ ${passage} AHEAD ▲`;
       this.t.prompt.setText(`${name}   ${where}${warn.bypassReady ? `    or  S = ${counter}` : ''}`).setVisible(true);
-      const w = this.t.prompt.width + 50 * u, py = H * 0.19, pulse = 0.75 + 0.25 * Math.sin(time / 70);
+      const py = this.bannerY(); this.t.prompt.setY(py);
+      const w = this.t.prompt.width + 50 * u, pulse = 0.75 + 0.25 * Math.sin(time / 70);
       this.slab(W / 2 - w / 2, py - 21 * u, w, 42 * u, 0x3a0f1c, 0.94, 0xff4a3d);
       this.slab(W / 2 - w / 2 + 4 * u, py + 15 * u, w - 10 * u, 5 * u, o === 0 ? 0x2fd27a : 0xff4a3d, pulse);
     } else if (fork) {
       const left = fork.riskySide === 'left';
       this.t.prompt.setText(left ? '◀ SHORTCUT          SAFE ROUTE ▶' : '◀ SAFE ROUTE          SHORTCUT ▶').setVisible(true);
-      const w = this.t.prompt.width + 50 * u, py = H * 0.19;
+      const py = this.bannerY(); this.t.prompt.setY(py);
+      const w = this.t.prompt.width + 50 * u;
       this.slab(W / 2 - w / 2, py - 21 * u, w, 42 * u, NAVY, 0.92, RIM);
       this.slab(W / 2 - w / 2 + 4 * u, py + 15 * u, w * 0.5 - 6 * u, 5 * u, left ? AMBER : 0x2fd27a, 1);
       this.slab(W / 2 + 2 * u, py + 15 * u, w * 0.5 - 6 * u, 5 * u, left ? 0x2fd27a : AMBER, 1);

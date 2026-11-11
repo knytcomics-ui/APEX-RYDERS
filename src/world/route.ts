@@ -104,7 +104,8 @@ export class Route {
   private sinceLethal = 0; // sections since the last lethal hazard of any kind
   /** Where the next lethal encounter should begin (near edge, metres); drawn from the route seed. */
   private nextLethalAt = Infinity;
-  private lastLethal: string | null = null;
+  /** Seeded shuffle bag of signature hazards: each group of three holds one of each kind. */
+  private bag: HazardKind[] = [];
   private branchRun = 0;
   private nextIndex = 0;
   private cursor = 0;
@@ -177,8 +178,9 @@ export class Route {
     });
     const lethal = options.filter(isLethal);
     if (lethal.length) {
-      // a hazard is due: draw which one, a repeat slightly less likely
-      return this.rng.weighted(lethal, (d) => (d.kind === this.lastLethal ? P.repeatWeight : 1));
+      // a hazard is due: take the next kind from the seeded shuffle bag
+      if (!this.bag.length) this.refillBag();
+      return lethal.find((d) => d.kind === this.bag[0]) ?? lethal[0];
     }
     return this.rng.weighted(options, (d) => {
       let w = d.weight;
@@ -190,6 +192,13 @@ export class Route {
       if (recovering && Math.abs(d.turn) >= 0.45) w *= 6;
       return w;
     });
+  }
+
+  /** One of each signature hazard, in an order drawn from the route's own seeded RNG. */
+  private refillBag() {
+    const b = [...HAZARD_POOL];
+    for (let i = b.length - 1; i > 0; i--) { const j = this.rng.int(0, i); [b[i], b[j]] = [b[j], b[i]]; }
+    this.bag = b;
   }
 
   /** Make sure the route exists up to distance s. */
@@ -205,7 +214,8 @@ export class Route {
       last = this.append(def, last.s1, last.endHeading, last.endX, last.endY);
       const h = last.hazards[0];
       if (h) {
-        this.lastLethal = h.kind;
+        const i = this.bag.indexOf(h.kind);
+        if (i >= 0) this.bag.splice(i, 1);
         this.nextLethalAt = h.z1 + this.rng.range(...TUNING.pacing.lethalGap);
       }
     }

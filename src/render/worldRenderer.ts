@@ -515,6 +515,14 @@ export class WorldRenderer {
     this.riderSize = RIDER_SCALE * (character === 'brute' ? 1.1 : character === 'lynn' ? 0.95 : 1);
   }
 
+  /** Blink: a brief flash where Mach was and where he reappears. */
+  onBlink(sim: Sim, x0: number, x1: number, y: number, z: number) {
+    for (const x of [x0, x1]) {
+      this.fx.ring(x, y + 0.1, z, sim.speed, 2.4, 0x38e1ff, 0.28, 0.24);
+      this.fx.ring(x, y + 0.1, z, sim.speed, 1.4, 0xffffff, 0.2, 0.16);
+    }
+  }
+
   /** Repellent: temporary green pulse around Lynn. */
   onRepel(sim: Sim) {
     this.fx.ring(sim.x, sim.groundY + 0.1, sim.s, sim.speed, 3.4, REPEL_GREEN, 0.5, 0.3);

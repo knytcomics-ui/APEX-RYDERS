@@ -5,7 +5,11 @@ import type { CharacterId } from '../core/config';
  * Rules live here, independent of any character's rendering or of Mach in particular.
  */
 export type HazardKind = 'chasm' | 'pillars' | 'mutantSpill';
-export type AbilityId = 'airJump' | 'surgeJump' | 'smash' | 'scrap' | 'fullHeal' | 'mutagenRepellent';
+export type AbilityId = 'airJump' | 'surgeJump' | 'smash' | 'scrap' | 'fullHeal' | 'mutagenRepellent' | 'phantomDrive';
+
+/** Seconds of riding before a lethal hazard at which it is announced; also the range in which
+ * Blink is disabled and Phantom Drive is held for a Chasm. */
+export const HAZARD_WARNING_S = 3.2;
 
 /**
  * A placed lethal hazard: a span of road with exactly one safe passage lane.
@@ -39,14 +43,17 @@ export const bypasses = (hazard: HazardKind, character: CharacterId, ability: Ab
 
 /**
  * What each character can do.
- *  - `signature`: the class counter, on S / swipe down.
- *  - `secondary`: the second ability, on E / tap (none for Mach).
- * Neither Scrap nor Full Heal counters any hazard: they are absent from HAZARD_BYPASS.
+ *  - `passive`: automatic trait (Mach Blink, Brute Near-Miss Momentum, Lynn HP regeneration).
+ *  - `signature`: the Ultimate / class counter, on S / swipe down.
+ *  - `secondary`: the second ability, on E / tap.
+ *  - `airJump`: the universal Double Jump (all riders; 25 Momentum, once per ordinary jump).
+ * No passive or secondary counters any lethal hazard: they are absent from HAZARD_BYPASS.
  */
-export const CHARACTER_KIT: Record<CharacterId, { airJump: boolean; signature: AbilityId; secondary: AbilityId | null }> = {
-  mach: { airJump: true, signature: 'surgeJump', secondary: null },
-  brute: { airJump: false, signature: 'smash', secondary: 'scrap' },
-  lynn: { airJump: false, signature: 'mutagenRepellent', secondary: 'fullHeal' },
+export type PassiveId = 'blink' | 'nearMiss' | 'regen';
+export const CHARACTER_KIT: Record<CharacterId, { airJump: boolean; passive: PassiveId; signature: AbilityId; secondary: AbilityId }> = {
+  mach: { airJump: true, passive: 'blink', signature: 'surgeJump', secondary: 'phantomDrive' },
+  brute: { airJump: true, passive: 'nearMiss', signature: 'smash', secondary: 'scrap' },
+  lynn: { airJump: true, passive: 'regen', signature: 'mutagenRepellent', secondary: 'fullHeal' },
 };
 
 /** Lethal hazards the route generator draws from. Section kind = hazard kind. */

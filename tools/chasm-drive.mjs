@@ -49,7 +49,7 @@ const evalJs = async (expression) => (await send('Runtime.evaluate', { returnByV
 const key = async (code, k) => { await send('Input.dispatchKeyEvent', { type: 'keyDown', code, key: k }); await send('Input.dispatchKeyEvent', { type: 'keyUp', code, key: k }); };
 const shot = async (name) => writeFileSync(path.join(root, 'screenshots', `r2-${name}.png`), Buffer.from((await send('Page.captureScreenshot', { format: 'png' })).data, 'base64'));
 const SIM = `window.apex.scene.getScene('game').sim`;
-const state = () => evalJs(`(() => { const s = ${SIM}, h = s.hazard; return JSON.stringify({ mode: window.apex.scene.getScene('game').mode, alive: s.alive, falling: s.falling, lane: s.lane, kind: s.jumpKind, y: +s.jumpY.toFixed(1), momentum: s.momentum, toEdge: h ? +(h.z0 - s.s).toFixed(1) : null, pastFar: h ? +(s.s - h.z1).toFixed(1) : null, ramp: h ? h.safeLane : null, hazard: h ? h.kind : null, cleared: h ? !!h.cleared : null, character: s.character, grabbed: s.grabbed, repel: s.repelActive, hp: s.hp, def: s.def, scrapT: +s.scrapT.toFixed(2), chain: s.chain, scoreChain: s.scoreChain, s: +s.s.toFixed(1), z1: h ? h.z1 : null, fell: s.events ? undefined : undefined, deathAt: s.alive ? null : +s.s.toFixed(1), offer: !!(s.hazardAhead() && s.hazardAhead().bypassReady) }); })()`);
+const state = () => evalJs(`(() => { const s = ${SIM}, h = s.hazard; return JSON.stringify({ mode: window.apex.scene.getScene('game').mode, alive: s.alive, falling: s.falling, lane: s.lane, kind: s.jumpKind, y: +s.jumpY.toFixed(1), momentum: s.momentum, toEdge: h ? +(h.z0 - s.s).toFixed(1) : null, pastFar: h ? +(s.s - h.z1).toFixed(1) : null, ramp: h ? h.safeLane : null, hazard: h ? h.kind : null, cleared: h ? !!h.cleared : null, character: s.character, cause: s.deathCause, speed: +s.speed.toFixed(1), base: +s.baseSpeed.toFixed(1), phantomT: +s.phantomT.toFixed(2), phantomCd: +s.phantomCd.toFixed(2), grabbed: s.grabbed, repel: s.repelActive, hp: s.hp, def: s.def, scrapT: +s.scrapT.toFixed(2), chain: s.chain, scoreChain: s.scoreChain, s: +s.s.toFixed(1), z1: h ? h.z1 : null, fell: s.events ? undefined : undefined, deathAt: s.alive ? null : +s.s.toFixed(1), offer: !!(s.hazardAhead() && s.hazardAhead().bypassReady) }); })()`);
 
 await send('Runtime.enable');
 await send('Page.enable');
@@ -235,11 +235,27 @@ await scenario('Lynn: Full Heal with 40 Momentum', 'rider=lynn&hp=1&momentum=40'
   const a = JSON.parse(await state());
   return `refused: HP ${a.hp}, Momentum ${a.momentum}`;
 }, ROAD);
-await scenario('Mach: E does nothing', 'momentum=100', async () => {
+await scenario('Mach: E = Phantom Drive', 'momentum=100', async () => {
   await sleep(300); await key('KeyE', 'e'); await sleep(150);
-  const a = JSON.parse(await state());
-  return `HP ${a.hp}, DEF ${a.def}, Momentum ${a.momentum}, Scrap ${a.scrapT}s, airborne kind ${a.kind}`;
+  const a = JSON.parse(await state()); await shot('phantom-active');
+  await key('KeyE', 'e'); await sleep(100);
+  const b = JSON.parse(await state());
+  await sleep(4300);
+  const c = JSON.parse(await state());
+  return `Momentum 100 -> ${a.momentum}, speed ${a.base} -> ${a.speed} m/s, ${a.phantomT}s left; 2nd press: Momentum ${b.momentum}; after ~4.5s: active ${c.phantomT}s, cooldown ${c.phantomCd}s, speed ${c.speed} (base ${c.base})`;
 }, ROAD);
+await scenario('Mach: W, W = Double Jump', 'momentum=30', async () => {
+  await sleep(300); await key('KeyW', 'w'); await sleep(200); await key('KeyW', 'w'); await sleep(60);
+  const a = JSON.parse(await state());
+  return `flight ${a.kind}, Momentum 30 -> ${a.momentum}`;
+}, ROAD);
+for (const r of ['brute', 'lynn']) {
+  await scenario(`${r}: W, W = Double Jump`, `rider=${r}&momentum=30`, async () => {
+    await sleep(300); await key('KeyW', 'w'); await sleep(200); await key('KeyW', 'w'); await sleep(60);
+    const a = JSON.parse(await state());
+    return `flight ${a.kind}, Momentum 30 -> ${a.momentum}`;
+  }, ROAD);
+}
 }
 console.log(errors.length ? `PAGE ERRORS:\n${errors.join('\n')}` : 'no page errors');
 ws.close(); killTree(); process.exit(0);

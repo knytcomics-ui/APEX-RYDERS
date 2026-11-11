@@ -1,8 +1,8 @@
-import { LANES, TUNING, clamp, lerp, smooth, type CharacterId } from '../core/config';
+import { LANES, LANE_W, TUNING, clamp, lerp, smooth, type CharacterId } from '../core/config';
 import { Route, type Section } from '../world/route';
 import { isPickup, type EntityKind } from '../world/populate';
 import type { Role } from '../world/sections';
-import { CHARACTER_KIT, CHASM, MUTANT, bypasses, type AbilityId, type Hazard, type HazardKind } from '../world/hazards';
+import { CHARACTER_KIT, CHASM, HAZARD_WARNING_S, MUTANT, bypasses, type AbilityId, type Hazard, type HazardKind } from '../world/hazards';
 
 /** 'down' = signature ability (S / swipe down); 'ability' = secondary ability (E / tap). */
 export type Intent = 'left' | 'right' | 'jump' | 'down' | 'ability';
@@ -10,13 +10,15 @@ export type Intent = 'left' | 'right' | 'jump' | 'down' | 'ability';
 export type JumpKind = 'none' | 'normal' | 'air' | 'surge' | 'ramp';
 
 export interface SimEvent {
-  type: 'pickup' | 'hit' | 'jump' | 'land' | 'lane' | 'blocked' | 'denied' | 'dead' | 'route' | 'fall' | 'cross' | 'smash' | 'repel' | 'scrap' | 'heal' | 'crash';
+  type: 'pickup' | 'hit' | 'jump' | 'land' | 'lane' | 'blocked' | 'denied' | 'dead' | 'route' | 'fall' | 'cross' | 'smash' | 'repel' | 'scrap' | 'heal' | 'crash'
+    | 'phantom' | 'phantomPause' | 'phantomResume' | 'phantomEnd' | 'blink' | 'nearMiss' | 'regen';
   kind?: EntityKind;
   role?: Role;
   jump?: JumpKind; // jump / land / cross: the flight involved
   impact?: number; // land: vertical speed at touchdown (m/s)
   ability?: AbilityId; // denied: which ability was refused
-  reason?: 'momentum' | 'noTarget' | 'airborne' | 'noDef' | 'active' | 'hpFull'; // denied: why
+  reason?: 'momentum' | 'noTarget' | 'airborne' | 'noDef' | 'active' | 'hpFull' | 'cooldown' | 'surge' | 'chasm' | 'phantom'; // denied: why
+  x0?: number; // blink: lateral position before the teleport
   hazard?: HazardKind; // cross / smash / crash: which lethal hazard
   lanes?: number[]; // smash: the lanes whose pillars were destroyed
   x: number;
@@ -42,7 +44,10 @@ export class Sim {
   god: boolean;
 
   s = 0; // distance along the route (metres)
+  /** Effective riding speed (m/s): baseSpeed, x1.25 while Phantom Drive is boosting. */
   speed = 0;
+  /** Normal riding speed, before Phantom Drive. */
+  baseSpeed = 0;
   lane = 2;
   laneFrom = 2;
   laneT = 1;
@@ -77,6 +82,20 @@ export class Sim {
   private comboTimer = 0;
   invuln = 0;
   alive = true;
+  /** What ended the run (set at the game-ending transition; a new run starts null). */
+  deathCause: 'chasm' | 'pillars' | 'mutantSpill' | 'crate' | 'barricade' | null = null;
+
+  // --- Mach: Phantom Drive (secondary) and Blink (passive) ---
+  phantomT = 0; // boosted seconds remaining (0 = not active)
+  phantomCd = 0; // cooldown seconds remaining
+  /** The Chasm currently holding Phantom Drive's boost and timer, until its far edge is cleared. */
+  phantomHold: Hazard | null = null;
+  /** True during steps that are actually boosted (score bonus applies). */
+  phantomOn = false;
+  blinkCd = 0;
+  // --- Lynn: HP regeneration (passive) ---
+  private regenQuiet = 0; // damage-free seconds
+  private regenAcc = 0; // progress through the current interval
   time = 0;
   role: Role = 'main';
   sec: Section;
@@ -89,7 +108,7 @@ export class Sim {
     this.route = new Route(opts.seed, 'city', !this.attract);
     this.route.ensure(450);
     this.sec = this.route.sectionAt(0);
-    this.speed = this.attract ? TUNING.speed.attract : TUNING.speed.base;
+    this.speed = this.baseSpeed = this.attract ? TUNING.speed.attract : TUNING.speed.base;
   }
 
   get x() { return lerp(this.sec.laneX(this.laneFrom, this.s), this.sec.laneX(this.lane, this.s), smooth(this.laneT)); }
@@ -129,7 +148,10 @@ export class Sim {
     this.emit('jump').jump = 'normal';
   }
 
-  /** Air Jump: one per flight, costs Momentum. A refused attempt leaves the current jump untouched. */
+  /**
+   * Double Jump (all riders): one per ordinary jump, costs Momentum. Not available during a
+   * ramp flight or a Surge. A refused attempt leaves the current jump untouched.
+   */
   private airJump() {
     const cost = TUNING.jump.airCost;
     const allowed = CHARACTER_KIT[this.character].airJump && this.jumpKind === 'normal' && !this.airJumpUsed;
@@ -150,10 +172,11 @@ export class Sim {
   /** The multiplier pickups actually score at: the chain, doubled while Scrap is active. */
   get scoreChain() { return this.chain * (this.scrapT > 0 ? TUNING.scrap.chainFactor : 1); }
 
-  /** The character's secondary (E / tap) ability. Mach has none. */
+  /** The character's secondary (E / tap) ability. */
   private secondary() {
     const ability = CHARACTER_KIT[this.character].secondary;
-    if (ability === 'scrap') this.scrap();
+    if (ability === 'phantomDrive') this.phantomDrive();
+    else if (ability === 'scrap') this.scrap();
     else if (ability === 'fullHeal') this.fullHeal();
   }
 
@@ -184,11 +207,120 @@ export class Sim {
     this.emit('heal');
   }
 
+  /**
+   * Phantom Drive (Mach): +25% speed, immediately, for 4 s of boosted riding, with a 1.25x
+   * bonus on score earned while boosted. No protection of any kind. Refused (at no cost)
+   * while active, cooling down, during a Surge, with a Chasm in warning range, or without
+   * 50 Momentum.
+   */
+  private phantomDrive() {
+    const P = TUNING.phantom;
+    const deny = (reason: SimEvent['reason']) => { const e = this.emit('denied'); e.ability = 'phantomDrive'; e.reason = reason; };
+    if (this.phantomT > 0) return deny('active');
+    if (this.phantomCd > 0) return deny('cooldown');
+    if (this.jumpKind === 'surge') return deny('surge');
+    if (this.chasmInRange()) return deny('chasm');
+    if (this.momentum < P.cost) return deny('momentum');
+    this.momentum -= P.cost;
+    this.phantomT = P.duration;
+    this.phantomHold = null;
+    this.phantomOn = true;
+    this.speed = this.baseSpeed * P.speedFactor; // immediate
+    this.emit('phantom');
+  }
+
+  /** A Chasm (not yet cleared to its far edge) within warning range. */
+  private chasmInRange(): Hazard | null {
+    const h = this.findHazard();
+    return h && h.kind === 'chasm' && this.s <= h.z1 && h.z0 - this.s <= this.speed * HAZARD_WARNING_S ? h : null;
+  }
+
+  /**
+   * Advance Phantom Drive for this step and return the speed factor. A Chasm entering warning
+   * range holds the boost and pauses the timer until that Chasm's far edge is cleared (the
+   * hold is sticky, so the slower un-boosted speed can't flicker it back on).
+   */
+  private stepPhantom(dt: number) {
+    const P = TUNING.phantom;
+    if (this.phantomCd > 0) this.phantomCd = Math.max(0, this.phantomCd - dt);
+    this.phantomOn = false;
+    if (this.phantomT <= 0) return 1;
+    if (this.phantomHold && this.s > this.phantomHold.z1) { this.phantomHold = null; this.emit('phantomResume'); }
+    if (!this.phantomHold) { const c = this.chasmInRange(); if (c) { this.phantomHold = c; this.emit('phantomPause'); } }
+    if (this.phantomHold) return 1;
+    this.phantomOn = true;
+    this.phantomT -= dt;
+    if (this.phantomT <= 1e-6) { this.phantomT = 0; this.phantomCd = P.cooldown; this.emit('phantomEnd'); }
+    return P.speedFactor;
+  }
+
+  /**
+   * Blink (Mach passive): an instant one-lane teleport away from an ordinary-debris hit that
+   * would land within the next 0.25 s, by the same lane and height rules as collide(). Grounded
+   * only, never with invulnerability, never anywhere near a lethal hazard, never into debris or
+   * across a fork divider. A Blink that finds no safe lane does nothing and costs no cooldown.
+   */
+  private tryBlink() {
+    const B = TUNING.blink;
+    if (this.character !== 'mach' || this.god || this.blinkCd > 0 || this.airborne || this.invuln > 0) return;
+    const h = this.hazard;
+    if (h && this.s <= h.z1 + 1 && h.z0 - this.s <= this.speed * HAZARD_WARNING_S) return; // lethal hazards are not Blink's business
+    const from = this.laneNow, reach = 1.1 + this.speed * B.window;
+    const debrisIn = (lane: number, back: number, ahead: number) => {
+      for (const sec of this.route.sections) {
+        if (sec.s1 < this.s - back - 2 || sec.s0 > this.s + ahead + 2) continue;
+        for (const e of sec.entities) {
+          if (e.taken || isPickup(e.kind) || e.lane !== lane) continue;
+          const dz = e.s - this.s;
+          if (dz < -back || dz > ahead) continue;
+          if (this.jumpY > (e.kind === 'barricade' ? 0.85 : 2)) continue; // same height rule as collide()
+          return true;
+        }
+      }
+      return false;
+    };
+    if (!debrisIn(from, 1.1, reach)) return;
+    const safe = (lane: number) => {
+      if (lane < 0 || lane >= LANES) return false;
+      const ahead = this.s + this.speed * B.window;
+      const ok = this.sec.canCross(from, lane, this.s) && this.route.sectionAt(ahead).canCross(from, lane, ahead);
+      this.route.sectionAt(this.s);
+      return ok && !debrisIn(lane, 1.5, 1.1 + this.speed * B.arrivalClear);
+    };
+    const dir = this.laneT < 1 ? Math.sign(this.lane - this.laneFrom) : 0;
+    const prefer = dir !== 0 ? from - dir : from - 1; // opposite the lane change, else left
+    const other = 2 * from - prefer;
+    const to = safe(prefer) ? prefer : safe(other) ? other : -1;
+    if (to < 0) return;
+    const x0 = this.x;
+    this.lane = this.laneFrom = to;
+    this.laneT = 1;
+    this.queued = null;
+    this.blinkCd = B.cooldown;
+    this.emit('blink').x0 = x0;
+  }
+
+  /** Lynn's passive: +1 HP per 12 s once 5 damage-free seconds have passed; never DEF, never past max. */
+  private stepRegen(dt: number) {
+    if (this.character !== 'lynn') return;
+    const R = TUNING.regen;
+    this.regenQuiet += dt;
+    if (this.hp >= TUNING.survival.hp) { this.regenAcc = 0; return; }
+    if (this.regenQuiet < R.delay) return;
+    this.regenAcc += dt;
+    if (this.regenAcc >= R.interval - 1e-9) {
+      this.regenAcc = 0;
+      this.hp = Math.min(TUNING.survival.hp, this.hp + 1);
+      this.emit('regen');
+    }
+  }
+
   /** The character's signature (S / swipe-down) ability. */
   private signature() {
     const ability = CHARACTER_KIT[this.character].signature;
     if (ability === 'smash' || ability === 'mutagenRepellent') { this.counter(ability); return; }
     if (ability !== 'surgeJump') return;
+    if (this.phantomT > 0) { const e = this.emit('denied'); e.ability = 'surgeJump'; e.reason = 'phantom'; return; } // no Surge while Phantom Drive is active (incl. paused)
     // Surge Jump: grounded, full meter only; spends all of it.
     if (this.airborne || this.momentum < TUNING.momentum.max) { const e = this.emit('denied'); e.ability = 'surgeJump'; e.reason = this.airborne ? 'airborne' : 'momentum'; return; }
     this.momentum = 0;
@@ -197,7 +329,8 @@ export class Sim {
     this.airJumpUsed = true;
     this.jumpV = TUNING.jump.surgeVelocity;
     this.gravity = TUNING.jump.gravity * TUNING.jump.surgeGravityScale;
-    this.speed *= TUNING.jump.surgeSpeedBoost;
+    this.baseSpeed *= TUNING.jump.surgeSpeedBoost;
+    this.speed = this.baseSpeed;
     this.emit('jump').jump = 'surge';
   }
 
@@ -255,7 +388,7 @@ export class Sim {
 
   /** Momentum a signature ability needs before it can fire. */
   abilityCost(a: AbilityId) {
-    return a === 'surgeJump' ? TUNING.momentum.max : a === 'smash' ? TUNING.smash.cost : a === 'mutagenRepellent' ? TUNING.repellent.cost : a === 'fullHeal' ? TUNING.fullHeal.cost : a === 'airJump' ? TUNING.jump.airCost : 0;
+    return a === 'phantomDrive' ? TUNING.phantom.cost : a === 'surgeJump' ? TUNING.momentum.max : a === 'smash' ? TUNING.smash.cost : a === 'mutagenRepellent' ? TUNING.repellent.cost : a === 'fullHeal' ? TUNING.fullHeal.cost : a === 'airJump' ? TUNING.jump.airCost : 0;
   }
 
   /** The ability currently carrying the bike, for hazard-bypass rules. */
@@ -295,7 +428,8 @@ export class Sim {
     const sp = TUNING.speed;
     let target = this.attract ? sp.attract : Math.min(sp.max, sp.base + this.distance * sp.perMetre);
     if (this.jumpKind === 'surge') target *= TUNING.jump.surgeSpeedBoost; // the kick lasts as long as the flight
-    this.speed += clamp(target - this.speed, -20 * dt, 12 * dt);
+    this.baseSpeed += clamp(target - this.baseSpeed, -20 * dt, 12 * dt);
+    this.speed = this.baseSpeed * this.stepPhantom(dt); // Phantom Drive never stacks with Surge: they exclude each other
     const prevS = this.s;
     this.s += this.speed * dt;
     this.route.ensure(this.s + 520);
@@ -334,6 +468,8 @@ export class Sim {
 
     if (this.invuln > 0) this.invuln -= dt;
     if (this.scrapT > 0) this.scrapT = Math.max(0, this.scrapT - dt);
+    if (this.blinkCd > 0) this.blinkCd = Math.max(0, this.blinkCd - dt);
+    this.stepRegen(dt);
     if (this.comboTimer > 0) {
       this.comboTimer -= dt;
       if (this.comboTimer <= 0) { this.combo = 0; this.chain = 1; }
@@ -348,7 +484,7 @@ export class Sim {
       if (role !== 'main' && !this.attract) this.emit('route', undefined, role);
     }
 
-    if (!this.attract) this.collide();
+    if (!this.attract) { this.tryBlink(); this.collide(prevS); }
   }
 
   // --- lethal hazards ---
@@ -421,6 +557,7 @@ export class Sim {
       this.jumpY = 0; this.jumpV = 0; this.airborne = false; this.jumpKind = 'none';
       this.hp = 0;
       this.alive = false;
+      this.deathCause = 'pillars';
       this.combo = 0; this.chain = 1;
       this.emit('dead');
       return;
@@ -466,6 +603,7 @@ export class Sim {
     if (this.grabT >= MUTANT.grabTime) {
       this.hp = 0;
       this.alive = false;
+      this.deathCause = 'mutantSpill';
       this.emit('dead');
     }
   }
@@ -495,14 +633,16 @@ export class Sim {
     if (this.fallT >= CHASM.fallTime) {
       this.hp = 0;
       this.alive = false;
+      this.deathCause = 'chasm';
       this.emit('dead');
     }
   }
 
   // --- ordinary collisions ---
 
-  private collide() {
+  private collide(prevS: number) {
     const laneNow = this.laneNow;
+    const nearMiss = CHARACTER_KIT[this.character].passive === 'nearMiss';
     for (const sec of this.route.sections) {
       if (sec.s1 < this.s - 3 || sec.s0 > this.s + 3) continue;
       for (const e of sec.entities) {
@@ -515,8 +655,17 @@ export class Sim {
           e.taken = true;
           this.collect(e.kind);
         } else {
+          const clears = this.jumpY > (e.kind === 'barricade' ? 0.85 : 2); // low debris can be hopped; crates need real height
+          // Brute's Near-Miss: the object passes him this step, unhit, in an adjacent lane, close
+          // beside him and at a height where it would have hit had he been in its lane. Once per object.
+          if (nearMiss && !e.nearMissed && e.lane !== laneNow && Math.abs(e.lane - laneNow) === 1 && prevS < e.s && this.s >= e.s && !clears
+            && Math.abs(this.x - sec.laneX(e.lane, e.s)) <= LANE_W * TUNING.nearMiss.lateral) {
+            e.nearMissed = true;
+            this.momentum = Math.min(TUNING.momentum.max, this.momentum + TUNING.nearMiss.reward);
+            this.emit('nearMiss', e.kind);
+          }
           if (dz > 1.1 || dz < -1.1 || e.lane !== laneNow) continue;
-          if (this.jumpY > (e.kind === 'barricade' ? 0.85 : 2)) continue; // low debris can be hopped; crates need real height
+          if (clears) continue;
           e.taken = true;
           this.damage(e.kind);
         }
@@ -530,9 +679,11 @@ export class Sim {
     this.combo++;
     this.comboTimer = sc.comboWindow;
     this.chain = Math.min(sc.maxChain, 1 + Math.floor(this.combo / sc.comboPerChain));
-    if (kind === 'coin') { this.coins++; this.score += sc.coin * this.scoreChain; }
-    else if (kind === 'momentumSmall') { this.momentum = Math.min(m.max, this.momentum + m.small); this.score += sc.momentumSmall * this.scoreChain; }
-    else if (kind === 'momentumLarge') { this.momentum = Math.min(m.max, this.momentum + m.large); this.score += sc.momentumLarge * this.scoreChain; }
+    // Phantom Drive: x1.25 on each gain while boosted, rounded per gain; the chain itself is untouched
+    const gain = (v: number) => (this.phantomOn ? Math.round(v * this.scoreChain * TUNING.phantom.scoreFactor) : v * this.scoreChain);
+    if (kind === 'coin') { this.coins++; this.score += gain(sc.coin); }
+    else if (kind === 'momentumSmall') { this.momentum = Math.min(m.max, this.momentum + m.small); this.score += gain(sc.momentumSmall); }
+    else if (kind === 'momentumLarge') { this.momentum = Math.min(m.max, this.momentum + m.large); this.score += gain(sc.momentumLarge); }
     this.emit('pickup', kind);
   }
 
@@ -540,12 +691,14 @@ export class Sim {
   private damage(kind: EntityKind) {
     if (this.invuln > 0 || this.god) { this.emit('hit', kind); return; }
     if (this.def > 0) this.def--; else this.hp--;
+    this.regenQuiet = 0; this.regenAcc = 0; // any DEF or HP loss restarts Lynn's regeneration delay
     this.combo = 0;
     this.chain = 1;
     this.invuln = TUNING.survival.invulnTime;
+    this.baseSpeed *= 0.72;
     this.speed *= 0.72;
     this.emit('hit', kind);
-    if (this.hp <= 0) { this.alive = false; this.emit('dead'); }
+    if (this.hp <= 0) { this.alive = false; this.deathCause = kind === 'barricade' ? 'barricade' : 'crate'; this.emit('dead'); }
   }
 
   // --- look-ahead for the HUD ---
@@ -562,11 +715,11 @@ export class Sim {
   }
 
   /** Lethal hazard coming up within warning distance: where the safe passage is and whether this character can bypass it. */
-  hazardAhead(seconds = 3.2): { hazard: Hazard; dist: number; laneOffset: number; canBypass: boolean; bypassReady: boolean; ability: AbilityId } | null {
+  hazardAhead(seconds = HAZARD_WARNING_S): { hazard: Hazard; dist: number; laneOffset: number; canBypass: boolean; bypassReady: boolean; ability: AbilityId } | null {
     const h = this.hazard;
     if (!h || h.cleared || h.repelled || this.s >= h.z0 || h.z0 - this.s > this.speed * seconds) return null;
     const ability = CHARACTER_KIT[this.character].signature;
     const canBypass = bypasses(h.kind, this.character, ability);
-    return { hazard: h, dist: h.z0 - this.s, laneOffset: h.safeLane - this.lane, canBypass, bypassReady: canBypass && this.momentum >= this.abilityCost(ability) && this.inAbilityWindow(ability, h), ability };
+    return { hazard: h, dist: h.z0 - this.s, laneOffset: h.safeLane - this.lane, canBypass, bypassReady: canBypass && this.momentum >= this.abilityCost(ability) && this.inAbilityWindow(ability, h) && !(ability === 'surgeJump' && this.phantomT > 0), ability };
   }
 }
