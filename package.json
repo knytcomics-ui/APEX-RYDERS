@@ -8,7 +8,8 @@
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
     "typecheck": "tsc --noEmit",
-    "assets": "node tools/prepare-assets.mjs"
+    "assets": "node tools/prepare-assets.mjs",
+    "assets:ui": "node tools/prepare-ui-assets.mjs"
   },
   "dependencies": {
     "phaser": "^3.90.0"
